@@ -48,6 +48,17 @@ class KilovoltClient:
                 case "hello":
                     self.version = data["version"]
                     self.connected = True
+                case "push":
+                    key: str = data["key"]
+                    # Check for key subscribers
+                    if key in self.__key_subscriptions:
+                        for func in self.__key_subscriptions[key]:
+                            func(key, data["new_value"])
+                    # Check for prefix subscribers
+                    for prefix in self.__prefix_subscriptions.keys():
+                        if key.startswith(prefix):
+                            for func in self.__prefix_subscriptions[prefix]:
+                                func(key, data["new_value"])
                 case _:
                     # Better logging
                     print(data)
@@ -95,8 +106,8 @@ class KilovoltClient:
 
     async def get_multiple(self, keys: list[str]) -> dict[str, str]:
         """
-        Read key from kilovolt as bare string
-        :param key: key to read
+        Read keys from kilovolt as bare string
+        :param keys: list of keys to read
         :return: dictionary of the requested keys as key=value
         """
         response = await self.send({"command": "kget-bulk", "data": {"keys": keys}})
@@ -161,12 +172,12 @@ class KilovoltClient:
         """
         await self.set(key, json.dumps(value))
 
-    async def subscribe(self, key: str, callback: Callable[[str], None]):
+    async def subscribe(self, key: str, callback: Callable[[str, str], None]):
         """
         Subscribe to key changes by providing a callback to be called when
         the key changes
         :param key: key to watch for changes
-        :param callback: callback to call
+        :param callback: callback to call (`lambda key,value:`)
         """
         # If we don't have the subscription already, subscribe on server
         if key not in self.__key_subscriptions:
@@ -175,7 +186,7 @@ class KilovoltClient:
         # Add to soft subscription
         self.__key_subscriptions[key].add(callback)
 
-    async def unsubscribe(self, key: str, callback: Callable[[str], None]):
+    async def unsubscribe(self, key: str, callback: Callable[[str, str], None]):
         """
         Remove subscription to key
         :param key: key to stop watching for changes
@@ -192,12 +203,12 @@ class KilovoltClient:
             await self.send({"command": "kunsub", "data": {"key": key}})
             del self.__key_subscriptions[key]
 
-    async def subscribe_prefix(self, prefix: str, callback: Callable[[str], None]):
+    async def subscribe_prefix(self, prefix: str, callback: Callable[[str, str], None]):
         """
         Subscribe to changes of keys with a given prefix by providing a callback
         to be called when one of those keys changes
         :param prefix: prefix of keys to watch for changes
-        :param callback: callback to call
+        :param callback: callback to call (`lambda key,value:`)
         """
         # If we don't have the subscription already, subscribe on server
         if prefix not in self.__prefix_subscriptions:
@@ -206,7 +217,7 @@ class KilovoltClient:
         # Add to soft subscription
         self.__prefix_subscriptions[prefix].add(callback)
 
-    async def unsubscribe_prefix(self, prefix: str, callback: Callable[[str], None]):
+    async def unsubscribe_prefix(self, prefix: str, callback: Callable[[str, str], None]):
         """
         Remove subscription to prefix
         :param prefix: prefix of keys to stop watching for changes

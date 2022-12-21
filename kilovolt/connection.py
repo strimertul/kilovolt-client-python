@@ -14,7 +14,13 @@ def generate_rid():
 
 
 class KilovoltClient:
-    def __init__(self, url="ws://localhost:4337/ws", password=None):
+    def __init__(self, url: str = "ws://localhost:4337/ws", password: str = None):
+        """
+        Create new Kilovolt client
+        :param url: Kilovolt server endpoint
+        :param password: Optional password for password-protected instances
+        """
+
         self.url = url
         self.password = password
         self.websocket = None
@@ -23,7 +29,7 @@ class KilovoltClient:
         self.version = None
         self.connected = False
 
-    async def read_task(self):
+    async def __read_task(self):
         async for message in self.websocket:
             data = json.loads(message)
             if "request_id" in data:
@@ -45,13 +51,19 @@ class KilovoltClient:
 
     async def connect(self):
         self.websocket = await websockets.connect("ws://localhost:4337/ws")
-        read_task = asyncio.create_task(self.read_task())
+        read_task = asyncio.create_task(self.__read_task())
         self.tasks.add(read_task)
         read_task.add_done_callback(self.tasks.discard)
         if self.password is not None:
-            await self.auth()
+            await self.__auth()
 
-    async def send(self, data):
+    async def send(self, data: dict) -> dict:
+        """
+        Send a command to the server
+        :param data: command to send
+        :return: received response or error
+        """
+
         # Add request id
         request_id = generate_rid()
         message = data.copy()
@@ -67,7 +79,26 @@ class KilovoltClient:
         response = await fut
         return response
 
-    async def auth(self):
+    async def get(self, key: str) -> str:
+        """
+        Read key from kilovolt as bare string
+        :param key: key to read
+        :return: key contents as string, or empty string if unset
+        """
+        response = await self.send({"command": "kget", "data": {"key": key}})
+        if not response["ok"]:
+            raise ValueError(response["error"])
+        return response["data"]
+
+    async def get_json(self, key: str) -> str:
+        """
+        Read key from kilovolt as JSON object
+        :param key: key to read
+        :return: key contents as dictionary, or error if it's not a valid object
+        """
+        return json.loads(await self.get(key))
+
+    async def __auth(self):
         auth_challenge = await self.send({"command": "klogin"})
         # Decode challenge and salt
         salt = base64.b64decode(auth_challenge["data"]["salt"])

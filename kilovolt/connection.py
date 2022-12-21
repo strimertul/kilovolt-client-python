@@ -1,4 +1,5 @@
 import asyncio
+from typing import Callable
 import websockets
 import json
 import os
@@ -24,8 +25,10 @@ class KilovoltClient:
         self.url = url
         self.password = password
         self.websocket = None
-        self.tasks = set()
-        self.pending = dict()
+        self.__tasks = set[asyncio.Task]()
+        self.__pending = dict[str, asyncio.Future]()
+        self.__key_subscriptions = dict[str, set[Callable]]()
+        self.__prefix_subscriptions = dict[str, set[Callable]]()
         self.version = None
         self.connected = False
 
@@ -33,8 +36,8 @@ class KilovoltClient:
         async for message in self.websocket:
             data = json.loads(message)
             if "request_id" in data:
-                if data["request_id"] in self.pending:
-                    self.pending[data["request_id"]].set_result(data)
+                if data["request_id"] in self.__pending:
+                    self.__pending[data["request_id"]].set_result(data)
                 else:
                     # Better logging
                     print("received response for a weird request_id!")
@@ -52,8 +55,8 @@ class KilovoltClient:
     async def connect(self):
         self.websocket = await websockets.connect("ws://localhost:4337/ws")
         read_task = asyncio.create_task(self.__read_task())
-        self.tasks.add(read_task)
-        read_task.add_done_callback(self.tasks.discard)
+        self.__tasks.add(read_task)
+        read_task.add_done_callback(self.__tasks.discard)
         if self.password is not None:
             await self.__auth()
 
@@ -75,7 +78,7 @@ class KilovoltClient:
         # Create future for when we get the reply
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
-        self.pending[request_id] = fut
+        self.__pending[request_id] = fut
         response = await fut
         return response
 
@@ -90,6 +93,28 @@ class KilovoltClient:
             raise ValueError(response["error"])
         return response["data"]
 
+    async def get_multiple(self, keys: list[str]) -> dict[str, str]:
+        """
+        Read key from kilovolt as bare string
+        :param key: key to read
+        :return: dictionary of the requested keys as key=value
+        """
+        response = await self.send({"command": "kget-bulk", "data": {"keys": keys}})
+        if not response["ok"]:
+            raise ValueError(response["error"])
+        return response["data"]
+
+    async def get_prefix(self, prefix: str) -> dict[str, str]:
+        """
+        Get all keys with a given prefix
+        :param prefix: prefix of keys to read
+        :return: dictionary of key/values with the given prefix
+        """
+        response = await self.send({"command": "kget-all", "data": {"prefix": prefix}})
+        if not response["ok"]:
+            raise ValueError(response["error"])
+        return response["data"]
+
     async def get_json(self, key: str) -> str:
         """
         Read key from kilovolt as JSON object
@@ -97,6 +122,106 @@ class KilovoltClient:
         :return: key contents as dictionary, or error if it's not a valid object
         """
         return json.loads(await self.get(key))
+
+    async def list(self, prefix: str = "") -> list[str]:
+        """
+        List all keys (with optional prefix)
+        :param prefix: optional prefix to filter keys
+        :return: list of keys
+        """
+        response = await self.send({"command": "klist", "data": {"prefix": prefix}})
+        if not response["ok"]:
+            raise ValueError(response["error"])
+        return response["data"]
+
+    async def set(self, key: str, value: str):
+        """
+        Write key to kilovolt as bare string
+        :param key: key to write
+        :param value: string value to write
+        """
+        response = await self.send({"command": "kset", "data": {"key": key, "data": value}})
+        if not response["ok"]:
+            raise ValueError(response["error"])
+
+    async def set_multiple(self, values: dict[str, str]):
+        """
+        Write multiple keys at once
+        :param values: dictionary as key=value of values to set
+        """
+        response = await self.send({"command": "kset-bulk", "data": values})
+        if not response["ok"]:
+            raise ValueError(response["error"])
+
+    async def set_json(self, key: str, value: object):
+        """
+        Write key to kilovolt as JSON object
+        :param key: key to write
+        :param value: object to save as JSON value
+        """
+        await self.set(key, json.dumps(value))
+
+    async def subscribe(self, key: str, callback: Callable[[str], None]):
+        """
+        Subscribe to key changes by providing a callback to be called when
+        the key changes
+        :param key: key to watch for changes
+        :param callback: callback to call
+        """
+        # If we don't have the subscription already, subscribe on server
+        if key not in self.__key_subscriptions:
+            await self.send({"command": "ksub", "data": {"key": key}})
+            self.__key_subscriptions[key] = set()
+        # Add to soft subscription
+        self.__key_subscriptions[key].add(callback)
+
+    async def unsubscribe(self, key: str, callback: Callable[[str], None]):
+        """
+        Remove subscription to key
+        :param key: key to stop watching for changes
+        :param callback: callback to unsubscribe
+        :return:
+        """
+        # Return error is key is not subscribed
+        if key not in self.__key_subscriptions:
+            raise ValueError("key not subscribed")
+        # Remove key from soft subscription
+        self.__key_subscriptions[key].remove(callback)
+        # If last subscriber, unsub from server
+        if len(self.__key_subscriptions) < 1:
+            await self.send({"command": "kunsub", "data": {"key": key}})
+            del self.__key_subscriptions[key]
+
+    async def subscribe_prefix(self, prefix: str, callback: Callable[[str], None]):
+        """
+        Subscribe to changes of keys with a given prefix by providing a callback
+        to be called when one of those keys changes
+        :param prefix: prefix of keys to watch for changes
+        :param callback: callback to call
+        """
+        # If we don't have the subscription already, subscribe on server
+        if prefix not in self.__prefix_subscriptions:
+            await self.send({"command": "ksub-prefix", "data": {"prefix": prefix}})
+            self.__prefix_subscriptions[prefix] = set()
+        # Add to soft subscription
+        self.__prefix_subscriptions[prefix].add(callback)
+
+    async def unsubscribe_prefix(self, prefix: str, callback: Callable[[str], None]):
+        """
+        Remove subscription to prefix
+        :param prefix: prefix of keys to stop watching for changes
+        :param callback: callback to unsubscribe
+        :return:
+        """
+        # Return error is prefix is not subscribed
+        if prefix not in self.__prefix_subscriptions:
+            raise ValueError("prefix not subscribed")
+        # Remove prefix from soft subscription
+        self.__prefix_subscriptions[prefix].remove(callback)
+        # If last subscriber, unsub from server
+        if len(self.__prefix_subscriptions) < 1:
+            await self.send({"command": "kunsub-prefix", "data": {"prefix": prefix}})
+            del self.__prefix_subscriptions[prefix]
 
     async def __auth(self):
         auth_challenge = await self.send({"command": "klogin"})

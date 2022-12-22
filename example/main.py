@@ -2,7 +2,7 @@
 
 import asyncio
 import os
-from kilovolt.connection import KilovoltClient
+from kilovolt import KilovoltClient
 
 
 async def connect():

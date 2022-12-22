@@ -1,0 +1,31 @@
+[project]
+name = "kilovolt"
+authors = [
+  { name="Ash Keel", email="ash@nebula.cafe" },
+]
+description = "Python client for Kilovolt servers, supports Kilovolt Protocol v9+"
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: ISC License (ISCL)",
+    "Operating System :: OS Independent",
+    "Framework :: AsyncIO"
+]
+dynamic = ["version"]
+dependencies = [
+    "websockets>=10"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/strimertul/kilovolt-client-python"
+"Bug Tracker" = "https://github.com/strimertul/kilovolt-client-python/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool]
+
+[tool.hatch.version]
+path = "kilovolt/__about__.py"
